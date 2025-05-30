@@ -1,0 +1,233 @@
+// backend/index.js
+const express = require('express');
+const cors = require('cors');
+const nodemailer = require('nodemailer');
+const sqlite3 = require('sqlite3').verbose();
+require('dotenv').config();
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+const PORT = process.env.PORT || 4000;
+
+// Initialize SQLite DB
+const db = new sqlite3.Database('./database.sqlite');
+
+db.serialize(() => {
+  db.run(`CREATE TABLE IF NOT EXISTS customers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT,
+    email TEXT,
+    business TEXT,
+    status TEXT DEFAULT 'pending'
+  )`);
+});
+
+// Email transporter (using SMTP or Gmail)
+const transporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST || 'smtp.gmail.com',
+  port: process.env.SMTP_PORT || 587,
+  secure: false,
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS,
+  },
+});
+
+// Add customer endpoint
+app.post('/api/customers', (req, res) => {
+  const { name, email, business } = req.body;
+  if (!name || !email || !business) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+  db.run(
+    `INSERT INTO customers (name, email, business) VALUES (?, ?, ?)`,
+    [name, email, business],
+    function (err) {
+      if (err) {
+        return res.status(500).json({ error: 'Database error' });
+      }
+      res.json({ id: this.lastID, name, email, business, status: 'pending' });
+    }
+  );
+});
+
+// List customers endpoint
+app.get('/api/customers', (req, res) => {
+  db.all(`SELECT * FROM customers`, (err, rows) => {
+    if (err) return res.status(500).json({ error: 'Database error' });
+    res.json(rows);
+  });
+});
+
+// Send review request email
+app.post('/api/customers/:id/send', (req, res) => {
+  const id = req.params.id;
+  db.get(`SELECT * FROM customers WHERE id = ?`, [id], (err, customer) => {
+    if (err || !customer) return res.status(404).json({ error: 'Customer not found' });
+
+    const mailOptions = {
+      from: process.env.SMTP_USER,
+      to: customer.email,
+      subject: `Please leave a review for your ${customer.business}`,
+      text: `Hi ${customer.name},\n\nThank you for your business at ${customer.business}! We’d appreciate if you could leave us a review. Click here: https://g.page/r/CUSTOM_LINK_HERE/review\n\nThanks!\nStarCue`,
+    };
+
+    transporter.sendMail(mailOptions, (error, info) => {
+      if (error) {
+        return res.status(500).json({ error: 'Failed to send email' });
+      }
+      // Update status in DB
+      db.run(`UPDATE customers SET status = 'sent' WHERE id = ?`, [id], (err) => {
+        if (err) return res.status(500).json({ error: 'Failed to update status' });
+        res.json({ message: 'Email sent', info });
+      });
+    });
+  });
+});
+
+app.listen(PORT, () => {
+  console.log(`StarCue backend running on port ${PORT}`);
+});
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=your-email@gmail.com
+SMTP_PASS=your-app-password
+{
+  "name": "starcue-backend",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.0.3",
+    "express": "^4.18.2",
+    "nodemailer": "^6.9.1",
+    "sqlite3": "^5.1.6"
+  }
+}
+import React, { useState, useEffect } from 'react';
+
+const API_URL = 'http://localhost:4000/api';
+
+function App() {
+  const [customers, setCustomers] = useState([]);
+  const [form, setForm] = useState({ name: '', email: '', business: '' });
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    fetchCustomers();
+  }, []);
+
+  const fetchCustomers = async () => {
+    const res = await fetch(`${API_URL}/customers`);
+    const data = await res.json();
+    setCustomers(data);
+  };
+
+  const handleInputChange = (e) => {
+    setForm({ ...form, [e.target.name]: e.target.value });
+  };
+
+  const handleAddCustomer = async (e) => {
+    e.preventDefault();
+    if (!form.name || !form.email || !form.business) return alert('Fill all fields');
+
+    setLoading(true);
+    const res = await fetch(`${API_URL}/customers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(form),
+    });
+    if (res.ok) {
+      setForm({ name: '', email: '', business: '' });
+      fetchCustomers();
+    } else {
+      alert('Failed to add customer');
+    }
+    setLoading(false);
+  };
+
+  const sendReviewRequest = async (id) => {
+    setLoading(true);
+    const res = await fetch(`${API_URL}/customers/${id}/send`, { method: 'POST' });
+    if (res.ok) {
+      fetchCustomers();
+    } else {
+      alert('Failed to send email');
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div style={{ padding: '2rem', fontFamily: 'Arial, sans-serif', maxWidth: 600, margin: 'auto' }}>
+      <h1>StarCue - Review Request SaaS</h1>
+      <form onSubmit={handleAddCustomer} style={{ marginBottom: '2rem' }}>
+        <input
+          name="name"
+          placeholder="Customer Name"
+          value={form.name}
+          onChange={handleInputChange}
+          style={{ marginRight: 8 }}
+        />
+        <input
+          name="email"
+          placeholder="Customer Email"
+          value={form.email}
+          onChange={handleInputChange}
+          style={{ marginRight: 8 }}
+        />
+        <input
+          name="business"
+          placeholder="Business Name"
+          value={form.business}
+          onChange={handleInputChange}
+          style={{ marginRight: 8 }}
+        />
+        <button type="submit" disabled={loading}>Add Customer</button>
+      </form>
+
+      <h2>Customers</h2>
+      {customers.length === 0 && <p>No customers yet.</p>}
+      <ul>
+        {customers.map(({ id, name, email, business, status }) => (
+          <li key={id} style={{ marginBottom: '1rem' }}>
+            <strong>{name}</strong> ({email}) - <em>{business}</em> - Status: {status}
+            <button
+              onClick={() => sendReviewRequest(id)}
+              disabled={status === 'sent' || loading}
+              style={{ marginLeft: 12 }}
+            >
+              Send Review Request
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default App;
+{
+  "name": "starcue-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-scripts": "5.0.1"
+  },
+  "scripts": {
+    "start": "react-scripts start"
+  }
+}
+
+
+
+
+
+
+
